@@ -1,3 +1,3 @@
 # MT
 
-Virus-host interaction in P. aeruginosa
+Virus-host interactions in P. aeruginosa
