@@ -1,0 +1,112 @@
+#!/bin/bash
+
+#Define folder with raw sequencing data
+path=$1
+output_folder=$2
+
+for folder in ` ls $path`;
+do
+
+#Concatenate multiple lanes into one file
+cd "${path}${folder}"
+ls
+mkdir -p $output_folder/Data/concatenatedRawData
+
+for i in `ls *_R1_001.fastq.gz`;
+do
+	assembly_no=`echo $i | rev | cut -d "/" -f1 | rev | cut -d "_" -f1`
+	cat $i >> "${output_folder}/Data/concatenatedRawData/${assembly_no}_R1.fastq.gz"
+	echo "Done"
+done
+
+for i in `ls *_R2_001.fastq.gz`;
+do
+	assembly_no=`echo $i | rev | cut -d "/" -f1 | rev | cut -d "_" -f1`
+	cat $i >> "${output_folder}/Data/concatenatedRawData/${assembly_no}_R2.fastq.gz"
+	echo "Done"
+done
+
+cd $HOME
+
+##Quality control of raw sequencing reads
+
+for file in `ls "${output_folder}/Data/concatenatedRawData/"`; 
+do 
+	assembly_no=`echo $file | cut -d "." -f1`
+	if [ ! -d ${output_folder}/QC/raw_fastQC/${assembly_no} ]
+	then
+		mkdir -p "${output_folder}/QC/raw_fastQC/${assembly_no}"	
+		fastqc -o "${output_folder}/QC/raw_fastQC/${assembly_no}" "${output_folder}/Data/concatenatedRawData/${assembly_no}.fastq.gz"
+	fi
+done
+
+##Trimming and assembly of the reads
+
+for data in `find ${output_folder}/Data/concatenatedRawData/ -maxdepth 1 -name "*_R1.*"`;
+do 
+	assembly_no=`echo $data | rev | cut -d "/" -f1 | rev | cut -d "_" -f1`
+	echo $assembly_no
+
+	if [ ! -e "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R1paired.fq.gz" ] && [ ! -e "${output_folder}/Assembly/${assembly_no}/${assembly_no}_contigs.fa" ]
+	then
+		mkdir -p "${output_folder}/Data/trimmed/${assembly_no}"
+		mkdir -p "${output_folder}/QC/trimmomatic"
+
+		java -jar /home/alicja/Trimmomatic-0.38/trimmomatic-0.38.jar PE -phred33 "${output_folder}/Data/concatenatedRawData/${assembly_no}_R1.fastq.gz" "${output_folder}/Data/concatenatedRawData/${assembly_no}_R2.fastq.gz" "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R1paired.fq.gz" "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R1unpaired.fq.gz" "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R2paired.fq.gz" "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R2unpaired.fq.gz" ILLUMINACLIP:/mnt/data/AssemblyAnnotation/NexteraPE-PE.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 2>&1 | tee "${output_folder}/QC/trimmomatic/${assembly_no}.log"
+	
+	#Quality control of trimmed data
+		for file in `ls "${output_folder}/Data/trimmed/${assembly_no}"`; 
+		do 
+		mkdir -p "${output_folder}/QC/trimmed_fastQC"
+
+		fastqc -o "${output_folder}/QC/trimmed_fastQC" "${output_folder}/Data/trimmed/${assembly_no}/${file}"
+		done
+		
+		mkdir -p "${output_folder}/Assembly"
+	#Assembly of trimmed data
+		shovill --ram 15 --gsize 6.8M --R1 "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R1paired.fq.gz" --R2 "${output_folder}/Data/trimmed/${assembly_no}/${assembly_no}_R2paired.fq.gz" --outdir "${output_folder}/Assembly/${assembly_no}/" 
+
+		mv "${output_folder}/Assembly/${assembly_no}/contigs.fa" "${output_folder}/Assembly/${assembly_no}/${assembly_no}_contigs.fa"
+
+		mv "${output_folder}/Assembly/${assembly_no}/contigs.gfa" "${output_folder}/Assembly/${assembly_no}/${assembly_no}_contigs.gfa"
+
+		mv "${output_folder}/Assembly/${assembly_no}/spades.fasta" "${output_folder}/Assembly/${assembly_no}/${assembly_no}_spades.fasta"
+	fi
+
+done
+
+##Bandage - get de Bruijn graph of the assembly
+mkdir -p ${output_folder}/QC/Bandage
+
+for assembly in `ls "${output_folder}/Assembly"`;
+do
+	if [ ! -e ${output_folder}/QC/Bandage/${assembly}.png ]
+	then
+		./Bandage image "${output_folder}/Assembly/${assembly}/${assembly}_contigs.gfa" "${output_folder}/QC/Bandage/${assembly}.png"
+	fi
+done
+
+quast_folder=`mkdir -p ${output_folder}/QC/Quast_QC`
+
+## Quast - quality control of the assembly
+for assembly in `ls "${output_folder}/Assembly"`;
+do
+	if [ ! -d "${output_folder}/QC/Quast/${assembly}" ]
+	then
+	python "quast-5.0.2/quast.py" "${output_folder}/Assembly/${assembly}/${assembly}_contigs.fa" -o "${output_folder}/QC/Quast/${assembly}/"
+	fi
+
+done
+
+#Annotate
+for assembly in `ls "${output_folder}/Assembly"`;
+do 
+	if [ ! -d "${output_folder}/Annotation/${assembly}" ]
+	then
+		prokka --kingdom Bacteria --outdir "${output_folder}/Annotation/${assembly}" --prefix ${assembly} --genus Pseudomonas "${output_folder}/Assembly/${assembly}/${assembly}_contigs.fa"
+	fi
+done
+
+done
+#create a log file for whole pipeline with "trimmometic successfully finished" etc / create man page
+
